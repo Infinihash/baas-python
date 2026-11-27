@@ -81,3 +81,64 @@ def test_create_sandbox_key_posts_email_without_auth_and_refuses_production():
     assert out["apiKey"] == "ihb_sbx_x"
     with pytest.raises(ValueError):
         create_sandbox_key("a@example.com", base_url=PRODUCTION_URL, session=s)
+
+
+# -- E-18: signed records export keeps the bytes and the signature ----------
+
+class RawResp:
+    def __init__(self, status, content, headers):
+        self.status_code, self.content, self.headers = status, content, headers
+        self.text = content.decode("utf-8", "replace")
+
+    def json(self):
+        import json
+        return json.loads(self.content)
+
+
+# Header shape from infinihash-baas src/lib/recordsExport.js (buildExport).
+EXPORT_BODY = b'{\n  "tenantId": "t1",\n  "counts": {"invoices": 1}\n}\n'
+EXPORT_SIG = "ed25519;keyid=0123456789abcdef;sig=" + "QUJD" * 21 + "QQ=="
+EXPORT_SHA = hashlib.sha256(EXPORT_BODY).hexdigest()
+
+
+def test_records_export_signed_returns_raw_body_signature_and_key_id():
+    s = FakeSession(RawResp(200, EXPORT_BODY, {
+        "X-Infinihash-Export-Signature": EXPORT_SIG,
+        "X-Infinihash-Export-SHA256": EXPORT_SHA,
+    }))
+    out = Rails("k", session=s).records_export_signed(from_="2026-01-01T00:00:00Z", format="csv")
+    assert out == {"body": EXPORT_BODY, "signature": EXPORT_SIG,
+                   "key_id": "0123456789abcdef", "sha256": EXPORT_SHA}
+    method, url, kw = s.calls[0]
+    assert (method, url) == ("GET", "https://rails-api.infinihash.com/api/v1/records/export")
+    assert kw["params"] == {"from": "2026-01-01T00:00:00Z", "format": "csv"}
+    assert kw["headers"]["Authorization"] == "Bearer k"
+
+
+def test_records_export_signed_unsigned_deployment():
+    s = FakeSession(RawResp(200, EXPORT_BODY, {"X-Infinihash-Export-Signature": "unsigned"}))
+    out = Rails("k", session=s).records_export_signed()
+    assert out["signature"] == "unsigned" and out["key_id"] is None and out["body"] == EXPORT_BODY
+    assert s.calls[0][2]["params"] is None
+
+
+def test_records_export_signed_error_raises_and_needs_key():
+    s = FakeSession(RawResp(401, b'{"code": "unauthorized"}', {}))
+    with pytest.raises(RailsError) as e:
+        Rails("k", session=s).records_export_signed()
+    assert e.value.status == 401
+    with pytest.raises(ValueError):
+        Rails(session=FakeSession(None)).records_export_signed()
+
+
+def test_records_export_is_unchanged_parsed_json():
+    s = FakeSession(FakeResp(200, {"tenantId": "t1"}))
+    assert Rails("k", session=s).records_export() == {"tenantId": "t1"}
+
+
+def test_parse_export_signature():
+    from infinihash_baas import parse_export_signature
+    p = parse_export_signature(EXPORT_SIG)
+    assert p["alg"] == "ed25519" and p["keyid"] == "0123456789abcdef" and p["sig"].endswith("QQ==")
+    for bad in (None, "", "unsigned", "hmac;sig=x", "ed25519;keyid=a"):
+        assert parse_export_signature(bad) == {}
