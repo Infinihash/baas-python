@@ -17,7 +17,7 @@ test = ["pytest>=7"]
 
 [project.urls]
 Homepage = "https://onboard.infinihash.com"
-"API reference" = "https://rails-api.infinihash.com/api/docs"
+"API reference" = "https://rails-api.infinihash.com/docs/openapi.public.json"
 Source = "https://github.com/Infinihash/baas-python"
 
 [tool.setuptools.packages.find]

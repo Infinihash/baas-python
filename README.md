@@ -16,4 +16,4 @@ r.pay_invoice(inv["id"], idempotency_key="INV-1-pay-1")   # retries never double
 - `verify_webhook_signature(secret, raw_body, header)` is fail-closed.
 - `create_sandbox_key(email)` gets a free, instant sandbox key (no sign-up); `examples/sandbox_quickstart.py` goes from nothing to a paid sandbox invoice.
 - Examples: `examples/capabilities.py` (no key needed), `examples/sandbox_quickstart.py`, `examples/invoice_and_collect.py`.
-- Reference: https://rails-api.infinihash.com/api/docs. Get started: https://onboard.infinihash.com.
+- Reference: https://rails-api.infinihash.com/docs/openapi.public.json (public OpenAPI spec; the full `/api/docs` reference needs an API key). Get started: https://onboard.infinihash.com.
