@@ -69,6 +69,21 @@ class Rails:
             raise RailsError(r.status_code, body)
         return body
 
+    def _raw(self, method, path, params=None):
+        """Authenticated request that returns the response itself (bytes + headers)."""
+        if not self.api_key:
+            raise ValueError("api_key is required for this call")
+        headers = {"Accept": "*/*", "Authorization": "Bearer " + self.api_key}
+        r = self._s.request(method, self.base_url + path, params=params,
+                            headers=headers, timeout=self.timeout)
+        if r.status_code >= 400:
+            try:
+                body = r.json()
+            except ValueError:
+                body = {"raw": r.text}
+            raise RailsError(r.status_code, body)
+        return r
+
     # -- public, no key ----------------------------------------------------
     def health(self):
         return self._request("GET", "/health", auth=False)
@@ -111,11 +126,60 @@ class Rails:
         return self._request("GET", "/api/v1/usage", params={"month": month} if month else None)
 
     def records_export(self):
-        """Signed (Ed25519) tenant records export; verify with signing_key()."""
+        """Tenant records export, parsed as JSON.
+
+        The parsed dict cannot be verified: the Ed25519 signature covers the
+        exact response bytes, which this method discards. Use
+        records_export_signed() for evidence you intend to verify or keep.
+        """
         return self._request("GET", "/api/v1/records/export")
+
+    def records_export_signed(self, from_=None, to=None, format=None):
+        """Signed tenant records export with the exact bytes the signature covers.
+
+        Returns ``{"body": bytes, "signature": str | None, "key_id": str | None,
+        "sha256": str | None}``:
+
+        * ``body`` -- the raw response body. Store and verify these bytes;
+          re-serialising parsed JSON breaks the signature.
+        * ``signature`` -- the ``X-Infinihash-Export-Signature`` header,
+          ``ed25519;keyid=<id>;sig=<base64>``, or ``unsigned`` when the
+          deployment has no signing key.
+        * ``key_id`` -- the ``keyid`` from that header (match it against
+          ``signing_key()["keyId"]``), or None when unsigned.
+        * ``sha256`` -- the ``X-Infinihash-Export-SHA256`` header (hex).
+
+        ``from_`` / ``to`` are ISO-8601 bounds on createdAt; ``format`` is
+        ``"json"`` (default) or ``"csv"``. See the README for verification.
+        """
+        params = {k: v for k, v in (("from", from_), ("to", to), ("format", format)) if v is not None}
+        r = self._raw("GET", "/api/v1/records/export", params=params or None)
+        signature = r.headers.get("X-Infinihash-Export-Signature")
+        return {
+            "body": r.content,
+            "signature": signature,
+            "key_id": parse_export_signature(signature).get("keyid"),
+            "sha256": r.headers.get("X-Infinihash-Export-SHA256"),
+        }
 
     def signing_key(self):
         return self._request("GET", "/api/v1/records/signing-key", auth=False)
+
+
+def parse_export_signature(header):
+    """Split ``ed25519;keyid=<id>;sig=<base64>`` into ``{"alg", "keyid", "sig"}``.
+
+    Returns {} for a missing, ``unsigned`` or malformed header.
+    """
+    if not header or header == "unsigned":
+        return {}
+    parts = header.split(";")
+    out = {"alg": parts[0]}
+    for p in parts[1:]:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            out[k] = v
+    return out if out.get("alg") == "ed25519" and out.get("sig") else {}
 
 
 def verify_webhook_signature(secret, body, header, tolerance_seconds=300, now=None):
